@@ -16,49 +16,78 @@ st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
 
-# --- API KEY SANITIZATION ---
-def get_valid_api_key():
-    raw_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-    if not raw_key:
-        return None
-    # Fixes 'list' object has no attribute 'strip' if key was formatted as a list/array
-    if isinstance(raw_key, list):
-        for item in raw_key:
-            if isinstance(item, str) and item.strip():
-                return item.strip()
-        return None
-    if isinstance(raw_key, str):
-        return raw_key.strip()
-    return None
-
-
-# --- GEMINI CALL WITH RETRY ---
-def call_gemini_with_retry(client, prompt_text, status_widget, max_retries=5):
-    model_name = "gemini-3.6-flash"
+# --- MULTI-KEY RETRIEVAL & ROTATION ---
+def get_all_api_keys():
+    """Extracts all valid API keys from secrets or environment variables."""
+    raw_keys = st.secrets.get("GEMINI_API_KEYS") or st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    keys = []
     
-    for attempt in range(max_retries):
+    if isinstance(raw_keys, list):
+        for item in raw_keys:
+            if isinstance(item, str) and item.strip():
+                keys.append(item.strip())
+    elif isinstance(raw_keys, str) and raw_keys.strip():
+        # Handles comma-separated string keys if provided
+        for item in raw_keys.split(","):
+            if item.strip():
+                keys.append(item.strip())
+                
+    # Deduplicate while preserving order
+    unique_keys = []
+    for k in keys:
+        if k not in unique_keys:
+            unique_keys.append(k)
+    return unique_keys
+
+
+def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_key=2):
+    keys = get_all_api_keys()
+    if not keys:
+        return "[API Error]: No valid API keys found in Streamlit secrets or environment."
+    
+    if "active_key_idx" not in st.session_state:
+        st.session_state.active_key_idx = 0
+        
+    model_name = "gemini-3.6-flash"
+    total_attempts = len(keys) * max_retries_per_key
+    
+    for attempt in range(total_attempts):
+        current_idx = st.session_state.active_key_idx % len(keys)
+        active_key = keys[current_idx]
+        
         try:
+            client = genai.Client(api_key=active_key)
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt_text,
                 config=types.GenerateContentConfig(temperature=0.2)
             )
             return (response.text or "").strip()
+            
         except Exception as e:
             err_msg = str(e)
             
             if any(err in err_msg.lower() for err in ["429", "rate limit", "quota", "resource_exhausted"]):
-                wait_time = 15 * (attempt + 1)
-                status_widget.warning(f" Rate limit hit. Waiting {wait_time}s for quota reset (Attempt {attempt+1}/{max_retries})...")
-                time.sleep(wait_time)
-                continue
+                # Instantly rotate to next key
+                st.session_state.active_key_idx = (st.session_state.active_key_idx + 1) % len(keys)
+                next_idx = st.session_state.active_key_idx % len(keys)
+                
+                if len(keys) > 1:
+                    status_widget.warning(f"⚠️ Quota hit on Key #{current_idx + 1}. Instantly switching to Key #{next_idx + 1}...")
+                    time.sleep(0.5)  # Minimal pause for UI update
+                    continue
+                else:
+                    status_widget.warning("⏳ Single key quota hit. Pausing 15s for reset...")
+                    time.sleep(15)
+                    continue
+                    
             elif any(err in err_msg.lower() for err in ["503", "busy"]):
-                time.sleep(5)
+                time.sleep(2)
                 continue
                 
             return f"[API Error]: {err_msg}"
             
-    return "[Quota Exceeded]: Daily rate limit reached. Switch API keys or wait for quota reset."
+    return "[Quota Exceeded]: All API keys in your key pool have exhausted their rate limits."
 
 
 # --- PROMPT BUILDERS ---
@@ -92,7 +121,7 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
 
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 with tab1:
-    st.header("Native isiZulu Reasoning & QA (Gemini 2.5 Flash)")
+    st.header("Native isiZulu Reasoning & QA (Gemini 3.6 Flash)")
     st.markdown("Evaluates whether morphological context enhances native isiZulu reading comprehension and reasoning.")
     
     dataset_path = st.text_input("Dataset Path", "isizulu_qa_dataset.json")
@@ -121,16 +150,13 @@ with tab1:
         fewshot_k = col_k.number_input("Few-Shot Pool Size (K)", min_value=0, max_value=5, value=2)
         
         if st.button("Run Native QA Experiment"):
-            api_key = get_valid_api_key()
+            keys_available = get_all_api_keys()
             
-            if not api_key:
+            if not keys_available:
                 st.error("Missing or invalid GEMINI_API_KEY in Streamlit Secrets or Environment.")
             elif not selected_questions:
                 st.warning("Please select at least one question from the multiselect dropdown.")
             else:
-                client = genai.Client(api_key=api_key)
-                
-                # Split test targets from background pool
                 test_pool = [d for d in dataset_items if d["question"] in selected_questions]
                 remaining_pool = [d for d in dataset_items if d["question"] not in selected_questions]
                 fewshot_pool = remaining_pool[:fewshot_k] if remaining_pool else dataset_items[:fewshot_k]
@@ -155,10 +181,10 @@ with tab1:
                         status_text.info(f"Processing Question {i+1}/{len(test_pool)} | Condition: {cond.replace('_', ' ').title()}")
                         prompt = build_qa_prompt(cond, question, context, fewshot_pool)
                         
-                        response_text = call_gemini_with_retry(client, prompt, status_text)
+                        response_text = call_gemini_with_key_rotation(prompt, status_text)
                         row_data[cond.replace("_", " ").title()] = response_text
                         
-                        time.sleep(5)  # Pause to keep below free tier RPM limits
+                        time.sleep(1)  # Minimal pacing
                     
                     st.session_state.exp_results.append(row_data)
                     table_container.dataframe(pd.DataFrame(st.session_state.exp_results), use_container_width=True)
