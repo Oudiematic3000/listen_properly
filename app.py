@@ -1,7 +1,7 @@
 import os
 import json
 import time
-import random
+import requests
 import streamlit as st
 import torch
 import pandas as pd
@@ -13,7 +13,41 @@ from google.genai import types
 st.set_page_config(page_title="isiZulu AI Evaluation", layout="wide")
 st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
-tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
+tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini / Groq Fallback)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
+
+
+# --- GROQ FALLBACK FUNCTION ---
+def call_groq_fallback(prompt_text, status_widget):
+    """Fallback generator using Groq's openai/gpt-oss-120b model when Gemini hits limits."""
+    groq_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+    
+    if not groq_key:
+        return "[Quota Exceeded]: Gemini limit reached, and no GROQ_API_KEY was found in secrets."
+    
+    status_widget.warning("⚡ Gemini rate/quota limit reached. Switching to Groq fallback (`openai/gpt-oss-120b`)...")
+    
+    url = "https://api.groq.com/openai/v1/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {groq_key}",
+        "Content-Type": "application/json"
+    }
+    payload = {
+        "model": "openai/gpt-oss-120b",
+        "messages": [
+            {"role": "user", "content": prompt_text}
+        ],
+        "temperature": 0.2
+    }
+    
+    try:
+        response = requests.post(url, headers=headers, json=payload, timeout=30)
+        if response.status_code == 200:
+            res_json = response.json()
+            return res_json["choices"][0]["message"]["content"].strip()
+        else:
+            return f"[Groq Error {response.status_code}]: {response.text}"
+    except Exception as e:
+        return f"[Groq Exception]: {str(e)}"
 
 
 # --- MULTI-KEY RETRIEVAL & ROTATION ---
@@ -27,12 +61,10 @@ def get_all_api_keys():
             if isinstance(item, str) and item.strip():
                 keys.append(item.strip())
     elif isinstance(raw_keys, str) and raw_keys.strip():
-        # Handles comma-separated string keys if provided
         for item in raw_keys.split(","):
             if item.strip():
                 keys.append(item.strip())
                 
-    # Deduplicate while preserving order
     unique_keys = []
     for k in keys:
         if k not in unique_keys:
@@ -40,10 +72,12 @@ def get_all_api_keys():
     return unique_keys
 
 
-def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_key=2):
+def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_key=1):
     keys = get_all_api_keys()
+    
+    # If no Gemini keys are provided at all, jump straight to Groq
     if not keys:
-        return "[API Error]: No valid API keys found in Streamlit secrets or environment."
+        return call_groq_fallback(prompt_text, status_widget)
     
     if "active_key_idx" not in st.session_state:
         st.session_state.active_key_idx = 0
@@ -68,26 +102,26 @@ def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_ke
             err_msg = str(e)
             
             if any(err in err_msg.lower() for err in ["429", "rate limit", "quota", "resource_exhausted"]):
-                # Instantly rotate to next key
+                # Rotate key
                 st.session_state.active_key_idx = (st.session_state.active_key_idx + 1) % len(keys)
                 next_idx = st.session_state.active_key_idx % len(keys)
                 
-                if len(keys) > 1:
-                    status_widget.warning(f"⚠️ Quota hit on Key #{current_idx + 1}. Instantly switching to Key #{next_idx + 1}...")
-                    time.sleep(0.5)  # Minimal pause for UI update
-                    continue
-                else:
-                    status_widget.warning("⏳ Single key quota hit. Pausing 15s for reset...")
-                    time.sleep(15)
-                    continue
-                    
+                # If we cycled through all available Gemini keys, attempt Groq fallback
+                if attempt == total_attempts - 1:
+                    return call_groq_fallback(prompt_text, status_widget)
+                
+                status_widget.warning(f"⚠️ Gemini Key #{current_idx + 1} limited. Trying Key #{next_idx + 1}...")
+                time.sleep(0.5)
+                continue
+                
             elif any(err in err_msg.lower() for err in ["503", "busy"]):
                 time.sleep(2)
                 continue
                 
             return f"[API Error]: {err_msg}"
             
-    return "[Quota Exceeded]: All API keys in your key pool have exhausted their rate limits."
+    # Final fallback if loop ends without success
+    return call_groq_fallback(prompt_text, status_widget)
 
 
 # --- PROMPT BUILDERS ---
@@ -121,12 +155,11 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
 
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 with tab1:
-    st.header("Native isiZulu Reasoning & QA (Gemini 3.6 Flash)")
-    st.markdown("Evaluates whether morphological context enhances native isiZulu reading comprehension and reasoning.")
+    st.header("Native isiZulu Reasoning & QA")
+    st.markdown("Evaluates native isiZulu reading comprehension (Primary: Gemini 3.6 Flash | Fallback: Groq GPT-OSS 120B).")
     
     dataset_path = st.text_input("Dataset Path", "isizulu_qa_dataset.json")
     
-    # Pre-load JSON data for question selection
     dataset_items = []
     if os.path.exists(dataset_path):
         try:
@@ -150,11 +183,7 @@ with tab1:
         fewshot_k = col_k.number_input("Few-Shot Pool Size (K)", min_value=0, max_value=5, value=2)
         
         if st.button("Run Native QA Experiment"):
-            keys_available = get_all_api_keys()
-            
-            if not keys_available:
-                st.error("Missing or invalid GEMINI_API_KEY in Streamlit Secrets or Environment.")
-            elif not selected_questions:
+            if not selected_questions:
                 st.warning("Please select at least one question from the multiselect dropdown.")
             else:
                 test_pool = [d for d in dataset_items if d["question"] in selected_questions]
@@ -184,7 +213,7 @@ with tab1:
                         response_text = call_gemini_with_key_rotation(prompt, status_text)
                         row_data[cond.replace("_", " ").title()] = response_text
                         
-                        time.sleep(1)  # Minimal pacing
+                        time.sleep(0.5)
                     
                     st.session_state.exp_results.append(row_data)
                     table_container.dataframe(pd.DataFrame(st.session_state.exp_results), use_container_width=True)
