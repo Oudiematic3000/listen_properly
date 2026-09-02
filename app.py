@@ -18,13 +18,13 @@ tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini / Qwen Fallback)",
 
 # --- QWEN FALLBACK FUNCTION (via Groq API) ---
 def call_qwen_fallback(prompt_text, status_widget):
-    """Fallback generator using Qwen 2.5 (qwen-2.5-72b-instruct) when Gemini hits limits."""
+    """Fallback generator using Qwen 3.8 (qwen/qwen3.8-27b) when Gemini hits limits."""
     groq_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
     
     if not groq_key:
         return "[Quota Exceeded]: Gemini limit reached, and no GROQ_API_KEY was found in secrets."
     
-    status_widget.warning("⚡ Gemini rate/quota limit reached. Switching to Qwen fallback (`qwen-2.5-72b-instruct`)...")
+    status_widget.warning("⚡ Gemini rate/quota limit reached. Switching to Qwen fallback (`qwen/qwen3.8-27b`)...")
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -32,7 +32,7 @@ def call_qwen_fallback(prompt_text, status_widget):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "qwen-2.5-72b-instruct",
+        "model": "qwen/qwen3.8-27b",
         "messages": [
             {"role": "user", "content": prompt_text}
         ],
@@ -155,7 +155,7 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 with tab1:
     st.header("Native isiZulu Reasoning & QA")
-    st.markdown("Evaluates native isiZulu reading comprehension (Primary: Gemini 3.6 Flash | Fallback: Qwen 2.5 72B).")
+    st.markdown("Evaluates native isiZulu reading comprehension (Primary: Gemini 3.6 Flash | Fallback: Qwen 3.8 27B).")
     
     dataset_path = st.text_input("Dataset Path", "isizulu_qa_dataset.json")
     
