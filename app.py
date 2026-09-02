@@ -226,12 +226,11 @@ import streamlit as st
 from huggingface_hub import InferenceClient
 
 # Initialize Hugging Face Client
-# Get token from st.secrets["HF_TOKEN"] or environment variable
 HF_TOKEN = st.secrets.get("HF_TOKEN") or os.environ.get("HF_TOKEN")
 client = InferenceClient(api_key=HF_TOKEN)
 
 BASE_MODEL = "Qwen/Qwen2.5-7B-Instruct"
-# Replace with your Hugging Face repo ID
+# Replace with your Hugging Face username and repo name
 FINE_TUNED_MODEL = "Oudiematic3000/qwen2.5-7b-isizulu-pos-lora" 
 
 with tab1:
@@ -243,41 +242,39 @@ with tab1:
             st.error("Please add `HF_TOKEN` to your Streamlit secrets or environment variables.")
         else:
             with st.spinner("Requesting outputs from Hugging Face Inference API..."):
-                prompt_template = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
-
-### Instruction:
-Hlonza iziNxenye zokukhuluma (Part-of-Speech tags) zomugqa ngesiZulu.
-
-### Input:
-{}
-
-### Response:
-"""
-                formatted_prompt = prompt_template.format(inp_q.strip())
+                prompt_instruction = "Hlonza iziNxenye zokukhuluma (Part-of-Speech tags) zomugqa ngesiZulu."
                 
                 try:
-                    # 1. Untrained Base Qwen Response
-                    res_base = client.text_generation(
-                        prompt=formatted_prompt,
+                    # 1. Untrained Base Qwen Response (Chat API)
+                    res_base = client.chat_completion(
                         model=BASE_MODEL,
-                        max_new_tokens=100,
+                        messages=[
+                            {"role": "system", "content": prompt_instruction},
+                            {"role": "user", "content": inp_q.strip()}
+                        ],
+                        max_tokens=100,
                         temperature=0.2
                     )
-                    
-                    # 2. Fine-Tuned isiZulu POS Adapter Response
-                    res_fine = client.text_generation(
-                        prompt=formatted_prompt,
+                    base_output = res_base.choices[0].message.content
+
+                    # 2. Fine-Tuned isiZulu POS Adapter Response (Chat API)
+                    res_fine = client.chat_completion(
                         model=FINE_TUNED_MODEL,
-                        max_new_tokens=100,
+                        messages=[
+                            {"role": "system", "content": prompt_instruction},
+                            {"role": "user", "content": inp_q.strip()}
+                        ],
+                        max_tokens=100,
                         temperature=0.2
                     )
+                    fine_output = res_fine.choices[0].message.content
 
                     col1, col2 = st.columns(2)
                     col1.subheader("Untrained Base Qwen 2.5")
-                    col1.code(res_base.strip() if res_base else "[Empty Output]")
+                    col1.code(base_output.strip() if base_output else "[Empty Output]")
 
                     col2.subheader("Fine-Tuned isiZulu Adapter")
-                    col2.code(res_fine.strip() if res_fine else "[Empty Output]")
+                    col2.code(fine_output.strip() if fine_output else "[Empty Output]")
 
                 except Exception as e:
                     st.error(f"HF API Inference Error: {e}")
