@@ -72,14 +72,15 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
     prefix = "\n\n".join(blocks)
     return f"{instruction}{prefix}\n\nUlwazi: {context}\nUmbuzo: {question}\nImpendulo:"
 
+# --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 with tab1:
     st.header("Native isiZulu Reasoning & QA (Gemini 2.5 Flash)")
-    st.markdown("Evaluates whether morphological context enhances native isiZulu reading comprehension and reasoning.")
+    st.markdown("Evaluates whether morphological context enhances native isiZulu reading comprehension.")
     
     col_a, col_b, col_c = st.columns(3)
     dataset_path = col_a.text_input("Dataset Path", "isizulu_qa_dataset.json")
     fewshot_k = col_b.number_input("Few-Shot Examples (K)", min_value=0, max_value=5, value=2)
-    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=20, value=2)
+    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=10, value=2)
     
     if st.button("Run Native QA Experiment"):
         api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -104,8 +105,11 @@ with tab1:
             progress_bar = st.progress(0)
             status_text = st.empty()
             table_container = st.empty()
-            live_results = []
             
+            # Initialize results state
+            if "exp_results" not in st.session_state:
+                st.session_state.exp_results = []
+                
             conditions = ["zero_shot", "fewshot_plain", "fewshot_annotated"]
             
             for i, item in enumerate(test_pool):
@@ -113,21 +117,22 @@ with tab1:
                 context = item['context']
                 
                 row_data = {
-                    "Context (Ulwazi)": context[:80] + "...",
-                    "Question (Umbuzo)": question,
+                    "Context": context[:70] + "...",
+                    "Question": question,
                 }
                 
                 for cond in conditions:
-                    status_text.info(f"Processing item {i+1}/{len(test_pool)} | Condition: {cond.replace('_', ' ').title()}")
+                    status_text.info(f"Item {i+1}/{len(test_pool)} | Running {cond.replace('_', ' ').title()}...")
                     prompt = build_qa_prompt(cond, question, context, fewshot_pool)
                     
                     response_text = call_gemini_with_retry(client, prompt, status_text)
                     row_data[cond.replace("_", " ").title()] = response_text
                     
-                    time.sleep(3) # Base pause between requests
+                    # 5-second delay guarantees <12 RPM (below 15 RPM free tier limit)
+                    time.sleep(5) 
                 
-                live_results.append(row_data)
-                table_container.dataframe(pd.DataFrame(live_results), use_container_width=True)
+                st.session_state.exp_results.append(row_data)
+                table_container.dataframe(pd.DataFrame(st.session_state.exp_results), use_container_width=True)
                 progress_bar.progress((i + 1) / len(test_pool))
             
             status_text.success("✅ Evaluation Complete!")
