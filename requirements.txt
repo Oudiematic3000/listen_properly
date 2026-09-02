@@ -1,5 +1,6 @@
 streamlit
 google-genai
 torch
+torchvision
 transformers
 peft
