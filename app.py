@@ -13,18 +13,18 @@ from google.genai import types
 st.set_page_config(page_title="isiZulu AI Evaluation", layout="wide")
 st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
-tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini / Groq Fallback)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
+tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini / Qwen Fallback)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
 
-# --- GROQ FALLBACK FUNCTION ---
-def call_groq_fallback(prompt_text, status_widget):
-    """Fallback generator using Groq's openai/gpt-oss-120b model when Gemini hits limits."""
+# --- QWEN FALLBACK FUNCTION (via Groq API) ---
+def call_qwen_fallback(prompt_text, status_widget):
+    """Fallback generator using Qwen 2.5 (qwen-2.5-72b-instruct) when Gemini hits limits."""
     groq_key = st.secrets.get("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
     
     if not groq_key:
         return "[Quota Exceeded]: Gemini limit reached, and no GROQ_API_KEY was found in secrets."
     
-    status_widget.warning("⚡ Gemini rate/quota limit reached. Switching to Groq fallback (`openai/gpt-oss-120b`)...")
+    status_widget.warning("⚡ Gemini rate/quota limit reached. Switching to Qwen fallback (`qwen-2.5-72b-instruct`)...")
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -32,7 +32,7 @@ def call_groq_fallback(prompt_text, status_widget):
         "Content-Type": "application/json"
     }
     payload = {
-        "model": "openai/gpt-oss-120b",
+        "model": "qwen-2.5-72b-instruct",
         "messages": [
             {"role": "user", "content": prompt_text}
         ],
@@ -45,9 +45,9 @@ def call_groq_fallback(prompt_text, status_widget):
             res_json = response.json()
             return res_json["choices"][0]["message"]["content"].strip()
         else:
-            return f"[Groq Error {response.status_code}]: {response.text}"
+            return f"[Qwen Error {response.status_code}]: {response.text}"
     except Exception as e:
-        return f"[Groq Exception]: {str(e)}"
+        return f"[Qwen Exception]: {str(e)}"
 
 
 # --- MULTI-KEY RETRIEVAL & ROTATION ---
@@ -75,9 +75,9 @@ def get_all_api_keys():
 def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_key=1):
     keys = get_all_api_keys()
     
-    # If no Gemini keys are provided at all, jump straight to Groq
+    # If no Gemini keys are configured, fallback directly to Qwen
     if not keys:
-        return call_groq_fallback(prompt_text, status_widget)
+        return call_qwen_fallback(prompt_text, status_widget)
     
     if "active_key_idx" not in st.session_state:
         st.session_state.active_key_idx = 0
@@ -102,13 +102,13 @@ def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_ke
             err_msg = str(e)
             
             if any(err in err_msg.lower() for err in ["429", "rate limit", "quota", "resource_exhausted"]):
-                # Rotate key
+                # Rotate key index
                 st.session_state.active_key_idx = (st.session_state.active_key_idx + 1) % len(keys)
                 next_idx = st.session_state.active_key_idx % len(keys)
                 
-                # If we cycled through all available Gemini keys, attempt Groq fallback
+                # Trigger Qwen fallback if all Gemini keys fail
                 if attempt == total_attempts - 1:
-                    return call_groq_fallback(prompt_text, status_widget)
+                    return call_qwen_fallback(prompt_text, status_widget)
                 
                 status_widget.warning(f"⚠️ Gemini Key #{current_idx + 1} limited. Trying Key #{next_idx + 1}...")
                 time.sleep(0.5)
@@ -120,8 +120,7 @@ def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_ke
                 
             return f"[API Error]: {err_msg}"
             
-    # Final fallback if loop ends without success
-    return call_groq_fallback(prompt_text, status_widget)
+    return call_qwen_fallback(prompt_text, status_widget)
 
 
 # --- PROMPT BUILDERS ---
@@ -156,7 +155,7 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 with tab1:
     st.header("Native isiZulu Reasoning & QA")
-    st.markdown("Evaluates native isiZulu reading comprehension (Primary: Gemini 3.6 Flash | Fallback: Groq GPT-OSS 120B).")
+    st.markdown("Evaluates native isiZulu reading comprehension (Primary: Gemini 3.6 Flash | Fallback: Qwen 2.5 72B).")
     
     dataset_path = st.text_input("Dataset Path", "isizulu_qa_dataset.json")
     
