@@ -16,33 +16,28 @@ st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
 # --- GEMINI CALL WITH SMART RATE-LIMIT BACKOFF ---
-def call_gemini_with_retry(client, prompt_text, status_widget, max_retries=5):
-    model_name = "gemini-3.6-flash"
-    
-    for attempt in range(max_retries):
+import itertools
+
+# Set GEMINI_API_KEYS as a list in Streamlit secrets: GEMINI_API_KEYS = ["key1", "key2"]
+raw_keys = st.secrets.get("GEMINI_API_KEYS", [os.environ.get("GEMINI_API_KEY")])
+key_pool = itertools.cycle(raw_keys)
+
+def call_gemini_with_key_rotation(prompt_text, status_widget):
+    for _ in range(len(raw_keys)):
+        active_key = next(key_pool)
+        client = genai.Client(api_key=active_key)
         try:
             response = client.models.generate_content(
-                model=model_name,
+                model="gemini-3.6-flash",
                 contents=prompt_text,
-                config=types.GenerateContentConfig(temperature=0.2)
             )
             return (response.text or "").strip()
         except Exception as e:
-            err_msg = str(e)
-            
-            # Catch Google API Rate Limits (429 / Quota / Resource Exhausted)
-            if any(err in err_msg.lower() for err in ["429", "rate limit", "quota", "resource_exhausted"]):
-                wait_time = 15 * (attempt + 1) # Wait 15s, 30s, 45s... to reset quota window
-                status_widget.warning(f" Rate limit reached. Pausing {wait_time}s for Google API quota to reset (Attempt {attempt+1}/{max_retries})...")
-                time.sleep(wait_time)
+            if "quota" in str(e).lower() or "429" in str(e):
+                status_widget.warning("Key daily quota reached. Rotating to next API key...")
                 continue
-            elif any(err in err_msg.lower() for err in ["503", "busy"]):
-                time.sleep(5)
-                continue
-                
-            return f"[API Error]: {err_msg}"
-            
-    return "[Quota Exceeded]: Unable to process due to free tier rate limits. Please try again in 2-3 minutes."
+            return f"[API Error]: {str(e)}"
+    return "[All Keys Exhausted]: Daily quotas reached on all available keys."
 
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 def format_morphology(tokens):
