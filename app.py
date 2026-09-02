@@ -15,33 +15,34 @@ st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
 tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
-# --- GEMINI CALL WITH FAIL-FAST RETRY ---
+# --- GEMINI CALL WITH PACED RETRY ---
 def call_gemini_with_retry(client, prompt_text, max_retries=3):
+    # Valid model identifier
     model_name = "gemini-3.6-flash"
-    delay = 2  
+    delay = 4  
     
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt_text,
-                config=types.GenerateContentConfig(temperature=0.3) # Slight temp for natural generation
+                config=types.GenerateContentConfig(temperature=0.2)
             )
             return (response.text or "").strip()
         except Exception as e:
-            err_msg = str(e).lower()
-            if any(err in err_msg for err in ["503", "busy", "quota", "429", "rate limit", "exhausted"]):
+            err_msg = str(e)
+            # Retries only on temporary server capacity or rate limit errors
+            if any(err in err_msg.lower() for err in ["503", "busy", "quota", "429", "rate limit", "exhausted"]):
                 time.sleep(delay)
                 delay *= 2 
                 continue
-            return f"[API Error]: {str(e)}"
+            # Immediately show non-retryable errors (e.g. invalid key, model non-existent)
+            return f"[API Error]: {err_msg}"
             
-    return "[Timeout]: Exceeded retries waiting for Gemini API."
-
+    return "[Rate Limited]: API free tier limit reached. Please wait a minute and retry."
 
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 def format_morphology(tokens):
-    # Formats structural hints if provided in the dataset
     if not tokens: return ""
     lines = [f"  {t.get('word', '?')} [{t.get('pos_tag', '?')}] root={t.get('morphology', {}).get('root', '?')}" for t in tokens]
     return "\n".join(lines)
@@ -52,17 +53,12 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
         "ulwazi olunikeziwe. Phendula ngesiZulu kuphela, ube mfushane futhi ucacise.\n\n"
     )
     
-    # Zero Shot
     if condition == "zero_shot":
         return f"{instruction}Ulwazi (Context): {context}\nUmbuzo (Question): {question}\nImpendulo:"
     
-    # Few Shot (Plain or Annotated)
     blocks = []
     for ex in fewshot_pool:
-        q = ex.get('question', '')
-        c = ex.get('context', '')
-        a = ex.get('answer', '')
-        
+        q, c, a = ex.get('question', ''), ex.get('context', ''), ex.get('answer', '')
         if condition == "fewshot_plain":
             blocks.append(f"Ulwazi: {c}\nUmbuzo: {q}\nImpendulo: {a}")
         elif condition == "fewshot_annotated":
@@ -74,13 +70,13 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
     return f"{instruction}{prefix}\n\nUlwazi: {context}\nUmbuzo: {question}\nImpendulo:"
 
 with tab1:
-    st.header("Native isiZulu Reasoning & QA (Gemini 3.6 Flash)")
-    st.markdown("Tests if the model can read, reason, and answer **purely in isiZulu** without relying on translation. Evaluates if morphological scaffolding improves concordial agreement and logic.")
+    st.header("Native isiZulu Reasoning & QA (Gemini 2.5 Flash)")
+    st.markdown("Evaluates whether morphological context enhances native isiZulu reading comprehension and reasoning.")
     
     col_a, col_b, col_c = st.columns(3)
     dataset_path = col_a.text_input("Dataset Path", "isizulu_qa_dataset.json")
     fewshot_k = col_b.number_input("Few-Shot Examples (K)", min_value=0, max_value=5, value=2)
-    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=20, value=3)
+    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=20, value=2)
     
     if st.button("Run Native QA Experiment"):
         api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
@@ -88,14 +84,13 @@ with tab1:
         if not api_key:
             st.error("Missing GEMINI_API_KEY in Streamlit Secrets.")
         elif not os.path.exists(dataset_path):
-            st.error(f"Could not find dataset at {dataset_path}. (Ensure your JSON has 'context', 'question', and 'answer' keys).")
+            st.error(f"Could not find dataset at {dataset_path}.")
         else:
             client = genai.Client(api_key=api_key)
             
             with open(dataset_path, encoding="utf-8") as f:
                 raw_data = json.load(f)
             
-            # Filter for items that actually have QA pairs
             data = [d for d in raw_data if d.get("question") and d.get("context")]
             random.seed(42)
             random.shuffle(data)
@@ -103,11 +98,8 @@ with tab1:
             fewshot_pool = data[:fewshot_k]
             test_pool = data[fewshot_k:fewshot_k + test_size]
             
-            # Dynamic UI Elements
             progress_bar = st.progress(0)
             status_text = st.empty()
-            
-            # Create an empty container to hold the live-updating dataframe
             table_container = st.empty()
             live_results = []
             
@@ -118,7 +110,7 @@ with tab1:
                 context = item['context']
                 
                 row_data = {
-                    "Context (Ulwazi)": context[:100] + "...", # Truncated for UI neatness
+                    "Context (Ulwazi)": context[:80] + "...",
                     "Question (Umbuzo)": question,
                 }
                 
@@ -128,30 +120,24 @@ with tab1:
                     
                     response_text = call_gemini_with_retry(client, prompt)
                     row_data[cond.replace("_", " ").title()] = response_text
-                    time.sleep(1.5) # Gentle rate-limit pause
+                    
+                    # Essential 4-second delay to respect free-tier 15 RPM rate limits
+                    time.sleep(4) 
                 
-                # Append to live results and update the UI instantly
                 live_results.append(row_data)
-                df = pd.DataFrame(live_results)
-                table_container.dataframe(df, use_container_width=True)
-                
+                table_container.dataframe(pd.DataFrame(live_results), use_container_width=True)
                 progress_bar.progress((i + 1) / len(test_pool))
             
             status_text.text("✅ Evaluation Complete!")
 
-# --- MZANSILM CACHED MODEL LOAD (Unchanged) ---
+# --- MZANSILM TAB ---
 @st.cache_resource
 def load_mzansilm():
     MODEL_ID = "uctnlp/mzansilm-125m"
     tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    
-    base_model = AutoModelForCausalLM.from_pretrained(
-        MODEL_ID, 
-        torch_dtype=torch.float32,
-        low_cpu_mem_usage=True
-    )
+    base_model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32, low_cpu_mem_usage=True)
     model = PeftModel.from_pretrained(base_model, "Oudiematic3000/mzansilm-125m-baseline-lora", adapter_name="baseline")
     model.load_adapter("Oudiematic3000/mzansilm-125m-neurosymbolic-lora", adapter_name="neuro")
     model.eval()
