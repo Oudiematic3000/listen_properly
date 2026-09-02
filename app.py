@@ -1,9 +1,14 @@
-import os, json, time
+import os
+import json
+import time
+import random
 import streamlit as st
 import torch
+import sacrebleu
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from google import genai
+from google.genai import types
 
 st.set_page_config(page_title="isiZulu AI Evaluation", layout="wide")
 st.title("isiZulu Neurosymbolic AI Evaluation Suite")
@@ -20,43 +25,141 @@ def call_gemini_with_fallback(client, prompt_text):
             try:
                 response = client.models.generate_content(
                     model=model_name,
-                    contents=prompt_text
+                    contents=prompt_text,
+                    # Force temperature to 0 for translation evaluations
+                    config=types.GenerateContentConfig(temperature=0.0) 
                 )
-                return response.text
+                return (response.text or "").strip()
             except Exception as e:
                 # Catch rate limits, 503 service unavailable, or quota limits
                 if any(err in str(e).lower() for err in ["503", "busy", "quota", "429"]):
-                    time.sleep(1)
+                    time.sleep(2)
                     continue
                 raise e
     raise RuntimeError("All Gemini endpoints are currently busy. Please try again shortly.")
 
-with tab1:
-    st.header("In-Context Symbolic Scaffolding (Gemini)")
-    user_prompt = st.text_input("isiZulu Prompt", "Chaza ukuthi yini ubulungiswa esizweni?", key="g_prompt")
-    morph_input = st.text_input("Morphology Context", "ubulungiswa: class 14 (ubu-), root: lungisa", key="g_morph")
+
+# --- TAB 1: IN-CONTEXT LEARNING EXPERIMENT ---
+def format_morphology(tokens):
+    lines = []
+    for t in tokens:
+        morph = t.get("morphology", {}) or {}
+        lines.append(
+            f"  {t.get('word', '?')} [{t.get('pos_tag', '?')}] "
+            f"root={morph.get('root', '?')} prefix={morph.get('prefix', '?')}"
+        )
+    return "\n".join(lines)
+
+def build_prompt(condition, english_sentence, fewshot_pool):
+    instruction = (
+        "You are translating English into isiZulu. Study the reference "
+        "examples below, then translate the final sentence. Respond with "
+        "ONLY the isiZulu translation and nothing else — no explanation, "
+        "no English.\n\n"
+    )
+    if condition == "zero_shot":
+        return f"{instruction}English: {english_sentence}\nisiZulu:"
     
-    if st.button("Run Gemini Evaluation"):
+    blocks = []
+    for ex in fewshot_pool:
+        if condition == "fewshot_plain":
+            blocks.append(f"English: {ex['english_translation']}\nisiZulu: {ex['original_sentence']}")
+        elif condition == "fewshot_annotated":
+            blocks.append(
+                f"English: {ex['english_translation']}\n"
+                f"isiZulu: {ex['original_sentence']}\n"
+                f"Morphology:\n{format_morphology(ex.get('tokens', []))}"
+            )
+    
+    prefix = "\n\n".join(blocks)
+    return f"{instruction}{prefix}\n\nEnglish: {english_sentence}\nisiZulu:"
+
+with tab1:
+    st.header("In-Context Translation Evaluation (Gemini)")
+    st.markdown("Evaluates if morphological annotations improve few-shot translation vs. plain examples.")
+    
+    col_a, col_b, col_c = st.columns(3)
+    dataset_path = col_a.text_input("Dataset Path", "neurosymbolic_dataset.json")
+    fewshot_k = col_b.number_input("Few-Shot Examples (K)", min_value=1, max_value=15, value=8)
+    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=50, value=5)
+    
+    if st.button("Run ICL Experiment"):
         api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
         if not api_key:
             st.error("Missing GEMINI_API_KEY in Streamlit Secrets.")
+        elif not os.path.exists(dataset_path):
+            st.error(f"Could not find dataset at {dataset_path}. Please upload it to your repository.")
         else:
             client = genai.Client(api_key=api_key)
-            with st.spinner("Querying Gemini..."):
-                try:
-                    res_a = call_gemini_with_fallback(client, f"Answer the following isiZulu prompt directly: {user_prompt}")
-                    res_b = call_gemini_with_fallback(client, f"Linguistic context:\n{morph_input}\n\nUsing this morphology, answer: {user_prompt}")
-                    res_c = call_gemini_with_fallback(client, f"Step 1: Identify isiZulu word prefixes/roots/noun classes.\nStep 2: Generate response adhering to concordial rules.\n\nPrompt: {user_prompt}")
+            
+            # Load and Split Data
+            with open(dataset_path, encoding="utf-8") as f:
+                raw_data = json.load(f)
+            data = [d for d in raw_data if d.get("original_sentence") and d.get("english_translation")]
+            random.seed(42)
+            random.shuffle(data)
+            
+            needed = fewshot_k + test_size
+            if len(data) < needed:
+                st.warning(f"Dataset only has {len(data)} valid items. Shrinking test size.")
+                test_size = max(1, len(data) - fewshot_k)
+                
+            fewshot_pool = data[:fewshot_k]
+            test_pool = data[fewshot_k:fewshot_k + test_size]
+            
+            conditions = ["zero_shot", "fewshot_plain", "fewshot_annotated"]
+            results = {c: [] for c in conditions}
+            references = [item["original_sentence"] for item in test_pool]
+            
+            # UI Elements for live updates
+            progress_bar = st.progress(0)
+            status_text = st.empty()
+            log_container = st.container()
+            
+            # Run the generations
+            for i, item in enumerate(test_pool):
+                eng_text = item['english_translation']
+                status_text.text(f"Translating {i+1}/{len(test_pool)}: {eng_text}")
+                
+                for cond in conditions:
+                    prompt = build_prompt(cond, eng_text, fewshot_pool)
+                    try:
+                        out_text = call_gemini_with_fallback(client, prompt)
+                    except Exception as e:
+                        out_text = f"[ERROR: {e}]"
+                    results[cond].append(out_text)
+                    time.sleep(1) # Gentle rate-limit pause
+                
+                progress_bar.progress((i + 1) / len(test_pool))
+            
+            status_text.text("Scoring complete!")
+            
+            # Calculate Scores
+            st.subheader("Evaluation Scores")
+            score_cols = st.columns(3)
+            for i, cond in enumerate(conditions):
+                hyps = results[cond]
+                chrf = sacrebleu.corpus_chrf(hyps, [references]).score
+                bleu = sacrebleu.corpus_bleu(hyps, [references]).score
+                
+                with score_cols[i]:
+                    st.markdown(f"**{cond.replace('_', ' ').title()}**")
+                    st.metric("chrF Score", f"{chrf:.2f}")
+                    st.metric("BLEU Score", f"{bleu:.2f}")
+            
+            # Show Generation Table
+            st.subheader("Generation Results")
+            table_data = []
+            for i in range(len(test_pool)):
+                table_data.append({
+                    "English": test_pool[i]["english_translation"],
+                    "Ground Truth (isiZulu)": references[i],
+                    "Zero Shot": results["zero_shot"][i],
+                    "Few-Shot Plain": results["fewshot_plain"][i],
+                    "Few-Shot Annotated": results["fewshot_annotated"][i],
+                })
+            st.dataframe(table_data, use_container_width=True)
 
-                    col1, col2, col3 = st.columns(3)
-                    col1.subheader("Condition A (Direct)")
-                    col1.write(res_a)
-                    col2.subheader("Condition B (External Scaffold)")
-                    col2.write(res_b)
-                    col3.subheader("Condition C (Symbolic CoT)")
-                    col3.write(res_c)
-                except Exception as e:
-                    st.error(f"API Error: {e}")
 
 # --- MZANSILM CACHED MODEL LOAD ---
 @st.cache_resource
