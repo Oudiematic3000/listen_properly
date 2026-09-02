@@ -4,164 +4,142 @@ import time
 import random
 import streamlit as st
 import torch
-import sacrebleu
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from google import genai
 from google.genai import types
+import pandas as pd
 
 st.set_page_config(page_title="isiZulu AI Evaluation", layout="wide")
 st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
-tab1, tab2 = st.tabs(["Experiment 1: In-Context Prompting (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
+tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
-# --- GEMINI CALL WITH EXPONENTIAL BACKOFF RETRY (GEMINI 3.6 ONLY) ---
-def call_gemini_with_retry(client, prompt_text, max_retries=10):
+# --- GEMINI CALL WITH FAIL-FAST RETRY ---
+def call_gemini_with_retry(client, prompt_text, max_retries=3):
     model_name = "gemini-3.6-flash"
-    delay = 2  # initial delay in seconds
+    delay = 2  
     
     for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt_text,
-                config=types.GenerateContentConfig(temperature=0.0)
+                config=types.GenerateContentConfig(temperature=0.3) # Slight temp for natural generation
             )
             return (response.text or "").strip()
         except Exception as e:
             err_msg = str(e).lower()
-            # Catch rate limits (429), server busy (503), quota limits, or exhausted resources
-            if any(err in err_msg for err in ["503", "busy", "quota", "429", "rate limit", "resource_exhausted"]):
+            if any(err in err_msg for err in ["503", "busy", "quota", "429", "rate limit", "exhausted"]):
                 time.sleep(delay)
-                delay = min(delay * 2, 30)  # Exponentially increase wait time up to 30 seconds
+                delay *= 2 
                 continue
-            raise e
+            return f"[API Error]: {str(e)}"
             
-    raise RuntimeError(f"Exceeded max retries ({max_retries}) waiting for Gemini 3.6 tokens/capacity.")
+    return "[Timeout]: Exceeded retries waiting for Gemini API."
 
 
-# --- TAB 1: IN-CONTEXT LEARNING EXPERIMENT ---
+# --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 def format_morphology(tokens):
-    lines = []
-    for t in tokens:
-        morph = t.get("morphology", {}) or {}
-        lines.append(
-            f"  {t.get('word', '?')} [{t.get('pos_tag', '?')}] "
-            f"root={morph.get('root', '?')} prefix={morph.get('prefix', '?')}"
-        )
+    # Formats structural hints if provided in the dataset
+    if not tokens: return ""
+    lines = [f"  {t.get('word', '?')} [{t.get('pos_tag', '?')}] root={t.get('morphology', {}).get('root', '?')}" for t in tokens]
     return "\n".join(lines)
 
-def build_prompt(condition, english_sentence, fewshot_pool):
+def build_qa_prompt(condition, question, context, fewshot_pool):
     instruction = (
-        "You are translating English into isiZulu. Study the reference "
-        "examples below, then translate the final sentence. Respond with "
-        "ONLY the isiZulu translation and nothing else — no explanation, "
-        "no English.\n\n"
+        "Wena ungumsizi okhaliphile wesiZulu. Phendula umbuzo olandelayo ngokusebenzisa "
+        "ulwazi olunikeziwe. Phendula ngesiZulu kuphela, ube mfushane futhi ucacise.\n\n"
     )
-    if condition == "zero_shot":
-        return f"{instruction}English: {english_sentence}\nisiZulu:"
     
+    # Zero Shot
+    if condition == "zero_shot":
+        return f"{instruction}Ulwazi (Context): {context}\nUmbuzo (Question): {question}\nImpendulo:"
+    
+    # Few Shot (Plain or Annotated)
     blocks = []
     for ex in fewshot_pool:
+        q = ex.get('question', '')
+        c = ex.get('context', '')
+        a = ex.get('answer', '')
+        
         if condition == "fewshot_plain":
-            blocks.append(f"English: {ex['english_translation']}\nisiZulu: {ex['original_sentence']}")
+            blocks.append(f"Ulwazi: {c}\nUmbuzo: {q}\nImpendulo: {a}")
         elif condition == "fewshot_annotated":
-            blocks.append(
-                f"English: {ex['english_translation']}\n"
-                f"isiZulu: {ex['original_sentence']}\n"
-                f"Morphology:\n{format_morphology(ex.get('tokens', []))}"
-            )
-    
+            morph = format_morphology(ex.get('tokens', []))
+            morph_str = f"Ukwakheka kwamagama (Morphology):\n{morph}\n" if morph else ""
+            blocks.append(f"Ulwazi: {c}\nUmbuzo: {q}\n{morph_str}Impendulo: {a}")
+            
     prefix = "\n\n".join(blocks)
-    return f"{instruction}{prefix}\n\nEnglish: {english_sentence}\nisiZulu:"
+    return f"{instruction}{prefix}\n\nUlwazi: {context}\nUmbuzo: {question}\nImpendulo:"
 
 with tab1:
-    st.header("In-Context Translation Evaluation (Gemini 3.6 Flash)")
-    st.markdown("Evaluates if morphological annotations improve few-shot translation vs. plain examples.")
+    st.header("Native isiZulu Reasoning & QA (Gemini 3.6 Flash)")
+    st.markdown("Tests if the model can read, reason, and answer **purely in isiZulu** without relying on translation. Evaluates if morphological scaffolding improves concordial agreement and logic.")
     
     col_a, col_b, col_c = st.columns(3)
-    dataset_path = col_a.text_input("Dataset Path", "neurosymbolic_dataset.json")
-    fewshot_k = col_b.number_input("Few-Shot Examples (K)", min_value=1, max_value=15, value=8)
-    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=50, value=5)
+    dataset_path = col_a.text_input("Dataset Path", "isizulu_qa_dataset.json")
+    fewshot_k = col_b.number_input("Few-Shot Examples (K)", min_value=0, max_value=5, value=2)
+    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=20, value=3)
     
-    if st.button("Run ICL Experiment"):
+    if st.button("Run Native QA Experiment"):
         api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+        
         if not api_key:
             st.error("Missing GEMINI_API_KEY in Streamlit Secrets.")
         elif not os.path.exists(dataset_path):
-            st.error(f"Could not find dataset at {dataset_path}. Please upload it to your repository.")
+            st.error(f"Could not find dataset at {dataset_path}. (Ensure your JSON has 'context', 'question', and 'answer' keys).")
         else:
             client = genai.Client(api_key=api_key)
             
-            # Load and Split Data
             with open(dataset_path, encoding="utf-8") as f:
                 raw_data = json.load(f)
-            data = [d for d in raw_data if d.get("original_sentence") and d.get("english_translation")]
+            
+            # Filter for items that actually have QA pairs
+            data = [d for d in raw_data if d.get("question") and d.get("context")]
             random.seed(42)
             random.shuffle(data)
             
-            needed = fewshot_k + test_size
-            if len(data) < needed:
-                st.warning(f"Dataset only has {len(data)} valid items. Shrinking test size.")
-                test_size = max(1, len(data) - fewshot_k)
-                
             fewshot_pool = data[:fewshot_k]
             test_pool = data[fewshot_k:fewshot_k + test_size]
             
-            conditions = ["zero_shot", "fewshot_plain", "fewshot_annotated"]
-            results = {c: [] for c in conditions}
-            references = [item["original_sentence"] for item in test_pool]
-            
-            # UI Elements for live updates
+            # Dynamic UI Elements
             progress_bar = st.progress(0)
             status_text = st.empty()
             
-            # Run the generations
+            # Create an empty container to hold the live-updating dataframe
+            table_container = st.empty()
+            live_results = []
+            
+            conditions = ["zero_shot", "fewshot_plain", "fewshot_annotated"]
+            
             for i, item in enumerate(test_pool):
-                eng_text = item['english_translation']
+                question = item['question']
+                context = item['context']
+                
+                row_data = {
+                    "Context (Ulwazi)": context[:100] + "...", # Truncated for UI neatness
+                    "Question (Umbuzo)": question,
+                }
                 
                 for cond in conditions:
-                    status_text.text(f"Translating {i+1}/{len(test_pool)} [{cond}]: {eng_text}")
-                    prompt = build_prompt(cond, eng_text, fewshot_pool)
-                    try:
-                        out_text = call_gemini_with_retry(client, prompt)
-                    except Exception as e:
-                        out_text = f"[ERROR: {e}]"
-                    results[cond].append(out_text)
-                    time.sleep(1) # Base pause between requests
+                    status_text.text(f"Processing item {i+1}/{len(test_pool)} | Condition: {cond.replace('_', ' ').title()}")
+                    prompt = build_qa_prompt(cond, question, context, fewshot_pool)
+                    
+                    response_text = call_gemini_with_retry(client, prompt)
+                    row_data[cond.replace("_", " ").title()] = response_text
+                    time.sleep(1.5) # Gentle rate-limit pause
+                
+                # Append to live results and update the UI instantly
+                live_results.append(row_data)
+                df = pd.DataFrame(live_results)
+                table_container.dataframe(df, use_container_width=True)
                 
                 progress_bar.progress((i + 1) / len(test_pool))
             
-            status_text.text("Scoring complete!")
-            
-            # Calculate Scores
-            st.subheader("Evaluation Scores")
-            score_cols = st.columns(3)
-            for i, cond in enumerate(conditions):
-                hyps = results[cond]
-                chrf = sacrebleu.corpus_chrf(hyps, [references]).score
-                bleu = sacrebleu.corpus_bleu(hyps, [references]).score
-                
-                with score_cols[i]:
-                    st.markdown(f"**{cond.replace('_', ' ').title()}**")
-                    st.metric("chrF Score", f"{chrf:.2f}")
-                    st.metric("BLEU Score", f"{bleu:.2f}")
-            
-            # Show Generation Table
-            st.subheader("Generation Results")
-            table_data = []
-            for i in range(len(test_pool)):
-                table_data.append({
-                    "English": test_pool[i]["english_translation"],
-                    "Ground Truth (isiZulu)": references[i],
-                    "Zero Shot": results["zero_shot"][i],
-                    "Few-Shot Plain": results["fewshot_plain"][i],
-                    "Few-Shot Annotated": results["fewshot_annotated"][i],
-                })
-            st.dataframe(table_data, use_container_width=True)
+            status_text.text("✅ Evaluation Complete!")
 
-
-# --- MZANSILM CACHED MODEL LOAD ---
+# --- MZANSILM CACHED MODEL LOAD (Unchanged) ---
 @st.cache_resource
 def load_mzansilm():
     MODEL_ID = "uctnlp/mzansilm-125m"
@@ -169,7 +147,6 @@ def load_mzansilm():
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
     
-    # Low memory flags for 1GB RAM Streamlit Cloud instances
     base_model = AutoModelForCausalLM.from_pretrained(
         MODEL_ID, 
         torch_dtype=torch.float32,
