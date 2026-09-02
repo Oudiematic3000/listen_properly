@@ -13,7 +13,7 @@ from google.genai import types
 st.set_page_config(page_title="isiZulu AI Evaluation", layout="wide")
 st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
-tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini / Qwen Fallback)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
+tab1, tab2 = st.tabs(["Experiment 1: Fine-Tuned Adapters (MzansiLM)", "Experiment 2: Native Reasoning (Gemini / Qwen Fallback)"])
 
 
 # --- QWEN FALLBACK FUNCTION (via Groq API) ---
@@ -24,7 +24,7 @@ def call_qwen_fallback(prompt_text, status_widget):
     if not groq_key:
         return "[Quota Exceeded]: Gemini limit reached, and no GROQ_API_KEY was found in secrets."
     
-    status_widget.warning("⚡ Gemini rate/quota limit reached. Switching to Qwen fallback (`qwen/qwen3.8-27b`)...")
+    status_widget.warning("Gemini rate/quota limit reached. Switching to Qwen fallback (`qwen/qwen3.8-27b`)...")
     
     url = "https://api.groq.com/openai/v1/chat/completions"
     headers = {
@@ -110,7 +110,7 @@ def call_gemini_with_key_rotation(prompt_text, status_widget, max_retries_per_ke
                 if attempt == total_attempts - 1:
                     return call_qwen_fallback(prompt_text, status_widget)
                 
-                status_widget.warning(f"⚠️ Gemini Key #{current_idx + 1} limited. Trying Key #{next_idx + 1}...")
+                status_widget.warning(f"Gemini Key #{current_idx + 1} limited. Trying Key #{next_idx + 1}...")
                 time.sleep(0.5)
                 continue
                 
@@ -152,10 +152,10 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
     return f"{instruction}{prefix}\n\nUlwazi: {context}\nUmbuzo: {question}\nImpendulo:"
 
 
-# --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
-with tab1:
-    st.header("Native isiZulu Reasoning & QA")
-    st.markdown("Evaluates native isiZulu reading comprehension (Primary: Gemini 3.6 Flash | Fallback: Qwen 3.8 27B).")
+# --- TAB 2: NATIVE ISIZULU REASONING EXPERIMENT ---
+with tab2:
+    st.header("Simulated low-resource isiZulu comprehension")
+    st.markdown("Simulates fine-tuning using Linguistic structure using data supplied in prompt.")
     
     dataset_path = st.text_input("Dataset Path", "isizulu_qa_dataset.json")
     
@@ -181,7 +181,7 @@ with tab1:
         )
         fewshot_k = col_k.number_input("Few-Shot Pool Size (K)", min_value=0, max_value=5, value=2)
         
-        if st.button("Run Native QA Experiment"):
+        if st.button("Ask"):
             if not selected_questions:
                 st.warning("Please select at least one question from the multiselect dropdown.")
             else:
@@ -218,7 +218,7 @@ with tab1:
                     table_container.dataframe(pd.DataFrame(st.session_state.exp_results), use_container_width=True)
                     progress_bar.progress((i + 1) / len(test_pool))
                 
-                status_text.success("✅ Evaluation Complete!")
+                status_text.success("Evaluation Complete!")
 
 
 # --- TAB 2: MZANSILM ADAPTERS ---
@@ -234,7 +234,7 @@ def load_mzansilm():
     model.eval()
     return tokenizer, model
 
-with tab2:
+with tab1:
     st.header("Fine-Tuned Adapter Comparison (MzansiLM-125M)")
     inp_m = st.text_input("isiZulu Prompt", "Chaza ukuthi yini ubulungiswa esizweni?", key="m_prompt")
     EXAMPLE_MORPH = json.dumps([
