@@ -4,22 +4,20 @@ import time
 import random
 import streamlit as st
 import torch
+import pandas as pd
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from google import genai
 from google.genai import types
-import pandas as pd
 
 st.set_page_config(page_title="isiZulu AI Evaluation", layout="wide")
 st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
 tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
-# --- GEMINI CALL WITH PACED RETRY ---
-def call_gemini_with_retry(client, prompt_text, max_retries=3):
-    # Valid model identifier
+# --- GEMINI CALL WITH SMART RATE-LIMIT BACKOFF ---
+def call_gemini_with_retry(client, prompt_text, status_widget, max_retries=5):
     model_name = "gemini-3.6-flash"
-    delay = 4  
     
     for attempt in range(max_retries):
         try:
@@ -31,15 +29,20 @@ def call_gemini_with_retry(client, prompt_text, max_retries=3):
             return (response.text or "").strip()
         except Exception as e:
             err_msg = str(e)
-            # Retries only on temporary server capacity or rate limit errors
-            if any(err in err_msg.lower() for err in ["503", "busy", "quota", "429", "rate limit", "exhausted"]):
-                time.sleep(delay)
-                delay *= 2 
+            
+            # Catch Google API Rate Limits (429 / Quota / Resource Exhausted)
+            if any(err in err_msg.lower() for err in ["429", "rate limit", "quota", "resource_exhausted"]):
+                wait_time = 15 * (attempt + 1) # Wait 15s, 30s, 45s... to reset quota window
+                status_widget.warning(f" Rate limit reached. Pausing {wait_time}s for Google API quota to reset (Attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
                 continue
-            # Immediately show non-retryable errors (e.g. invalid key, model non-existent)
+            elif any(err in err_msg.lower() for err in ["503", "busy"]):
+                time.sleep(5)
+                continue
+                
             return f"[API Error]: {err_msg}"
             
-    return "[Rate Limited]: API free tier limit reached. Please wait a minute and retry."
+    return "[Quota Exceeded]: Unable to process due to free tier rate limits. Please try again in 2-3 minutes."
 
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 def format_morphology(tokens):
@@ -115,20 +118,19 @@ with tab1:
                 }
                 
                 for cond in conditions:
-                    status_text.text(f"Processing item {i+1}/{len(test_pool)} | Condition: {cond.replace('_', ' ').title()}")
+                    status_text.info(f"Processing item {i+1}/{len(test_pool)} | Condition: {cond.replace('_', ' ').title()}")
                     prompt = build_qa_prompt(cond, question, context, fewshot_pool)
                     
-                    response_text = call_gemini_with_retry(client, prompt)
+                    response_text = call_gemini_with_retry(client, prompt, status_text)
                     row_data[cond.replace("_", " ").title()] = response_text
                     
-                    # Essential 4-second delay to respect free-tier 15 RPM rate limits
-                    time.sleep(4) 
+                    time.sleep(3) # Base pause between requests
                 
                 live_results.append(row_data)
                 table_container.dataframe(pd.DataFrame(live_results), use_container_width=True)
                 progress_bar.progress((i + 1) / len(test_pool))
             
-            status_text.text("✅ Evaluation Complete!")
+            status_text.success("✅ Evaluation Complete!")
 
 # --- MZANSILM TAB ---
 @st.cache_resource
