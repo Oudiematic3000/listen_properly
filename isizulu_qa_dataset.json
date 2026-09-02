@@ -1,0 +1,68 @@
+[
+  {
+    "context": "UShaka kaSenzangakhona wayeyinkosi yamabutho akwaZulu. Waziwa kakhulu ngokuhlanganisa izizwe ezahlukene ukuze akhe isizwe esisodwa samaZulu.",
+    "question": "Ubani owayeyinkosi yamabutho akwaZulu?",
+    "answer": "UShaka kaSenzangakhona.",
+    "tokens": [
+      {"word": "UShaka", "pos_tag": "PROPN", "morphology": {"root": "Shaka", "prefix": "U"}},
+      {"word": "wayeyinkosi", "pos_tag": "NOUN", "morphology": {"root": "nkosi", "prefix": "wayeyi"}},
+      {"word": "yamabutho", "pos_tag": "NOUN", "morphology": {"root": "butho", "prefix": "yama"}},
+      {"word": "akwaZulu", "pos_tag": "LOC", "morphology": {"root": "Zulu", "prefix": "akwa"}}
+    ]
+  },
+  {
+    "context": "Izintaba zokhahlamba zinde kakhulu futhi zitholakala KwaZulu-Natal. Abantu abaningi bayathanda ukuvakashela lezi zintaba ngoba zinhle kakhulu.",
+    "question": "Zitholakala kuphi izintaba zokhahlamba?",
+    "answer": "Zitholakala KwaZulu-Natal.",
+    "tokens": [
+      {"word": "Izintaba", "pos_tag": "NOUN", "morphology": {"root": "ntaba", "prefix": "izi"}},
+      {"word": "zokhahlamba", "pos_tag": "PROPN", "morphology": {"root": "khahlamba", "prefix": "zo"}},
+      {"word": "Zitholakala", "pos_tag": "VERB", "morphology": {"root": "tholakala", "prefix": "zi"}},
+      {"word": "KwaZulu-Natal", "pos_tag": "LOC", "morphology": {"root": "Zulu-Natal", "prefix": "Kwa"}}
+    ]
+  },
+  {
+    "context": "UThandiwe ufunda eNyuvesi yaKwaZulu-Natal. Wenza izifundo zezobuchwepheshe kanti ufuna ukuba unjiniyela uma eqeda ukufunda.",
+    "question": "UThandiwe ufuna ukuba yini uma eqeda ukufunda?",
+    "answer": "Ufuna ukuba unjiniyela.",
+    "tokens": [
+      {"word": "UThandiwe", "pos_tag": "PROPN", "morphology": {"root": "Thandiwe", "prefix": "U"}},
+      {"word": "ufuna", "pos_tag": "VERB", "morphology": {"root": "funa", "prefix": "u"}},
+      {"word": "ukuba", "pos_tag": "VERB", "morphology": {"root": "ba", "prefix": "uku"}},
+      {"word": "unjiniyela", "pos_tag": "NOUN", "morphology": {"root": "njiniyela", "prefix": "u"}}
+    ]
+  },
+  {
+    "context": "Amadumbe awukudla okunempilo okuthandwa kakhulu ngabantu bakwaZulu. Avame ukuphekwa emanzini abilayo aze athambe ngaphambi kokuba adliwe.",
+    "question": "Amadumbe avame ukuphekwa kanjani?",
+    "answer": "Aphekwa emanzini abilayo aze athambe.",
+    "tokens": [
+      {"word": "Amadumbe", "pos_tag": "NOUN", "morphology": {"root": "dumbe", "prefix": "ama"}},
+      {"word": "awukudla", "pos_tag": "NOUN", "morphology": {"root": "dla", "prefix": "awuku"}},
+      {"word": "okunempilo", "pos_tag": "ADJ", "morphology": {"root": "mpilo", "prefix": "okune"}},
+      {"word": "aphekwa", "pos_tag": "VERB", "morphology": {"root": "phekwa", "prefix": "a"}}
+    ]
+  },
+  {
+    "context": "Imvula iyana kakhulu ehlobo esifundazweni saKwaZulu-Natal. Loku kusiza abalimi ukuthi batshale umbila nemifino ukuze bathole isivuno esihle.",
+    "question": "Imvula esiza abalimi ina nini kakhulu?",
+    "answer": "Iyana kakhulu ehlobo.",
+    "tokens": [
+      {"word": "Imvula", "pos_tag": "NOUN", "morphology": {"root": "vula", "prefix": "im"}},
+      {"word": "iyana", "pos_tag": "VERB", "morphology": {"root": "na", "prefix": "iya"}},
+      {"word": "ehlobo", "pos_tag": "LOC", "morphology": {"root": "hlobo", "prefix": "e"}},
+      {"word": "abalimi", "pos_tag": "NOUN", "morphology": {"root": "limi", "prefix": "aba"}}
+    ]
+  },
+  {
+    "context": "Ibhola lezinyawo ngumdlalo othandwa kakhulu eNingizimu Afrika. Amaqembu amakhulu afana naKaizer Chiefs neOrlando Pirates anabalandeli abaningi.",
+    "question": "Yimaphi amaqembu ebhola anabalandeli abaningi eNingizimu Afrika?",
+    "answer": "IKaizer Chiefs neOrlando Pirates.",
+    "tokens": [
+      {"word": "Ibhola", "pos_tag": "NOUN", "morphology": {"root": "bhola", "prefix": "i"}},
+      {"word": "lezinyawo", "pos_tag": "NOUN", "morphology": {"root": "nyawo", "prefix": "lezi"}},
+      {"word": "ngumdlalo", "pos_tag": "NOUN", "morphology": {"root": "dlalo", "prefix": "ngum"}},
+      {"word": "othandwa", "pos_tag": "VERB", "morphology": {"root": "thandwa", "prefix": "o"}}
+    ]
+  }
+]
