@@ -221,48 +221,83 @@ with tab2:
                 status_text.success("Evaluation Complete!")
 
 
-# --- TAB 2: MZANSILM ADAPTERS ---
+import streamlit as st
+import torch
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from peft import PeftModel
+
+# --- QWEN 2.5 MODEL & ADAPTER LOADING ---
 @st.cache_resource
-def load_mzansilm():
-    MODEL_ID = "uctnlp/mzansilm-125m"
-    tokenizer = AutoTokenizer.from_pretrained(MODEL_ID)
+def load_qwen():
+    BASE_MODEL_ID = "Qwen/Qwen2.5-7B-Instruct"
+    # Replace with your Hugging Face repo ID or local folder path (e.g., "./qwen2.5-7b-isizulu-pos-lora")
+    ADAPTER_ID = "YOUR_HF_USERNAME/qwen2.5-7b-isizulu-pos-lora"
+
+    # Quantization config to keep memory footprint under 6GB VRAM
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_quant_type="nf4",
+        bnb_4bit_compute_dtype=torch.float16,
+    )
+
+    tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL_ID)
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
-    base_model = AutoModelForCausalLM.from_pretrained(MODEL_ID, torch_dtype=torch.float32, low_cpu_mem_usage=True)
-    model = PeftModel.from_pretrained(base_model, "Oudiematic3000/mzansilm-125m-baseline-lora", adapter_name="baseline")
-    model.load_adapter("Oudiematic3000/mzansilm-125m-neurosymbolic-lora", adapter_name="neuro")
+
+    # 1. Load Untrained Base Model
+    base_model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL_ID,
+        quantization_config=bnb_config,
+        device_map="auto"
+    )
+
+    # 2. Attach Fine-Tuned Adapter
+    model = PeftModel.from_pretrained(base_model, ADAPTER_ID, adapter_name="isizulu_pos")
     model.eval()
     return tokenizer, model
 
-with tab1:
-    st.header("Fine-Tuned Adapter Comparison (MzansiLM-125M)")
-    inp_m = st.text_input("isiZulu Prompt", "Chaza ukuthi yini ubulungiswa esizweni?", key="m_prompt")
-    EXAMPLE_MORPH = json.dumps([
-        {"token": "Chaza", "root": "chaza", "pos": "VERB"},
-        {"token": "ubulungiswa", "root": "lungisa", "pos": "NOUN", "class": "14"},
-        {"token": "esizweni", "root": "sizwe", "pos": "NOUN_LOC", "class": "7"}
-    ], ensure_ascii=False)
-    morph_m = st.text_area("Morphology Graph (JSON)", value=EXAMPLE_MORPH, height=100)
-    
-    if st.button("Compare Adapters"):
-        with st.spinner("Loading model and generating outputs..."):
-            try:
-                tokenizer, peft_model = load_mzansilm()
-                def gen(p_text, adapter):
-                    peft_model.set_adapter(adapter)
-                    torch.manual_seed(42)
-                    inputs = tokenizer(p_text, return_tensors="pt")
-                    with torch.no_grad():
-                        outputs = peft_model.generate(**inputs, max_new_tokens=60, do_sample=False, repetition_penalty=1.2)
-                    return tokenizer.decode(outputs[0], skip_special_tokens=True)[len(p_text):].strip()
 
-                b_prompt = f"isiZulu Input: {inp_m}\nisiZulu Response:"
-                n_prompt = f"isiZulu Input: {inp_m}\nMorphology Graph: {morph_m.strip()}\nisiZulu Response:" if morph_m.strip() else b_prompt
+with tab1:
+    st.header("Qwen 2.5 7B: Base vs. Fine-Tuned isiZulu POS Adapter")
+    inp_q = st.text_input("isiZulu Sentence", "Abalimi basebenza emasimini.", key="q_prompt")
+    
+    if st.button("Compare Outputs"):
+        with st.spinner("Generating model outputs..."):
+            try:
+                tokenizer, peft_model = load_qwen()
+
+                prompt_template = """Below is an instruction that describes a task, paired with an input that provides further context. Write a response that appropriately completes the request.
+
+### Instruction:
+Hlonza iziNxenye zokukhuluma (Part-of-Speech tags) zomugqa ngesiZulu.
+
+### Input:
+{}
+
+### Response:
+"""
+                formatted_prompt = prompt_template.format(inp_q.strip())
+                inputs = tokenizer(formatted_prompt, return_tensors="pt").to(peft_model.device)
+                prompt_length = inputs.input_ids.shape[1]
+
+                # 1. Generate using Untrained Base Qwen (Disables adapter dynamically)
+                with torch.no_grad():
+                    with peft_model.disable_adapters():
+                        out_base = peft_model.generate(**inputs, max_new_tokens=100, do_sample=False)
+                        base_response = tokenizer.decode(out_base[0][prompt_length:], skip_special_tokens=True).strip()
+
+                # 2. Generate using Fine-Tuned isiZulu POS Adapter
+                with torch.no_grad():
+                    peft_model.set_adapter("isizulu_pos")
+                    out_fine = peft_model.generate(**inputs, max_new_tokens=100, do_sample=False)
+                    fine_response = tokenizer.decode(out_fine[0][prompt_length:], skip_special_tokens=True).strip()
 
                 col1, col2 = st.columns(2)
-                col1.subheader("Baseline Adapter Output")
-                col1.write(gen(b_prompt, "baseline"))
-                col2.subheader("Neurosymbolic Adapter Output")
-                col2.write(gen(n_prompt, "neuro"))
+                col1.subheader("Untrained Base Qwen 2.5")
+                col1.code(base_response if base_response else "[Empty Output]")
+
+                col2.subheader("Fine-Tuned isiZulu Adapter")
+                col2.code(fine_response if fine_response else "[Empty Output]")
+
             except Exception as e:
                 st.error(f"Model Inference Error: {e}")
