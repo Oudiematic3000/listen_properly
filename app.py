@@ -24,15 +24,15 @@ with tab1:
             with st.spinner("Querying Gemini..."):
                 try:
                     res_a = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=f"Answer the following isiZulu prompt directly: {user_prompt}"
                     ).text
                     res_b = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=f"Linguistic context:\n{morph_input}\n\nUsing this morphology, answer: {user_prompt}"
                     ).text
                     res_c = client.models.generate_content(
-                        model="gemini-2.5-flash",
+                        model="gemini-3.6-flash",
                         contents=f"Step 1: Identify isiZulu word prefixes/roots/noun classes.\nStep 2: Generate response adhering to concordial rules.\n\nPrompt: {user_prompt}"
                     ).text
 
