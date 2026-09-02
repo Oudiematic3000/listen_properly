@@ -4,4 +4,6 @@ torch
 torchvision
 transformers>=4.45.0,<5.0.0
 peft
-sacrebleu
+huggingface_hub
+requests
+pandas
