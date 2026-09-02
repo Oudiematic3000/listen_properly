@@ -2,5 +2,5 @@ streamlit
 google-genai
 torch
 torchvision
-transformers
+transformers>=4.45.0,<5.0.0
 peft
