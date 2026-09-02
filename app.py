@@ -15,28 +15,29 @@ st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
 tab1, tab2 = st.tabs(["Experiment 1: In-Context Prompting (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
-# --- GEMINI CALL WITH MODEL FALLBACKS ---
-def call_gemini_with_fallback(client, prompt_text):
-    # Primary model first, followed by secondary fallbacks
-    fallback_models = ["gemini-3.6-flash", "gemini-2.5-flash", "gemini-1.5-flash"]
+# --- GEMINI CALL WITH EXPONENTIAL BACKOFF RETRY (GEMINI 3.6 ONLY) ---
+def call_gemini_with_retry(client, prompt_text, max_retries=10):
+    model_name = "gemini-3.6-flash"
+    delay = 2  # initial delay in seconds
     
-    for model_name in fallback_models:
-        for attempt in range(2):
-            try:
-                response = client.models.generate_content(
-                    model=model_name,
-                    contents=prompt_text,
-                    # Force temperature to 0 for translation evaluations
-                    config=types.GenerateContentConfig(temperature=0.0) 
-                )
-                return (response.text or "").strip()
-            except Exception as e:
-                # Catch rate limits, 503 service unavailable, or quota limits
-                if any(err in str(e).lower() for err in ["503", "busy", "quota", "429"]):
-                    time.sleep(2)
-                    continue
-                raise e
-    raise RuntimeError("All Gemini endpoints are currently busy. Please try again shortly.")
+    for attempt in range(max_retries):
+        try:
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt_text,
+                config=types.GenerateContentConfig(temperature=0.0)
+            )
+            return (response.text or "").strip()
+        except Exception as e:
+            err_msg = str(e).lower()
+            # Catch rate limits (429), server busy (503), quota limits, or exhausted resources
+            if any(err in err_msg for err in ["503", "busy", "quota", "429", "rate limit", "resource_exhausted"]):
+                time.sleep(delay)
+                delay = min(delay * 2, 30)  # Exponentially increase wait time up to 30 seconds
+                continue
+            raise e
+            
+    raise RuntimeError(f"Exceeded max retries ({max_retries}) waiting for Gemini 3.6 tokens/capacity.")
 
 
 # --- TAB 1: IN-CONTEXT LEARNING EXPERIMENT ---
@@ -75,7 +76,7 @@ def build_prompt(condition, english_sentence, fewshot_pool):
     return f"{instruction}{prefix}\n\nEnglish: {english_sentence}\nisiZulu:"
 
 with tab1:
-    st.header("In-Context Translation Evaluation (Gemini)")
+    st.header("In-Context Translation Evaluation (Gemini 3.6 Flash)")
     st.markdown("Evaluates if morphological annotations improve few-shot translation vs. plain examples.")
     
     col_a, col_b, col_c = st.columns(3)
@@ -114,21 +115,20 @@ with tab1:
             # UI Elements for live updates
             progress_bar = st.progress(0)
             status_text = st.empty()
-            log_container = st.container()
             
             # Run the generations
             for i, item in enumerate(test_pool):
                 eng_text = item['english_translation']
-                status_text.text(f"Translating {i+1}/{len(test_pool)}: {eng_text}")
                 
                 for cond in conditions:
+                    status_text.text(f"Translating {i+1}/{len(test_pool)} [{cond}]: {eng_text}")
                     prompt = build_prompt(cond, eng_text, fewshot_pool)
                     try:
-                        out_text = call_gemini_with_fallback(client, prompt)
+                        out_text = call_gemini_with_retry(client, prompt)
                     except Exception as e:
                         out_text = f"[ERROR: {e}]"
                     results[cond].append(out_text)
-                    time.sleep(1) # Gentle rate-limit pause
+                    time.sleep(1) # Base pause between requests
                 
                 progress_bar.progress((i + 1) / len(test_pool))
             
