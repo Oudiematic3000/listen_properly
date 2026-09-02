@@ -15,31 +15,53 @@ st.title("isiZulu Neurosymbolic AI Evaluation Suite")
 
 tab1, tab2 = st.tabs(["Experiment 1: Native Reasoning (Gemini)", "Experiment 2: Fine-Tuned Adapters (MzansiLM)"])
 
-# --- GEMINI CALL WITH SMART RATE-LIMIT BACKOFF ---
-import itertools
 
-# Set GEMINI_API_KEYS as a list in Streamlit secrets: GEMINI_API_KEYS = ["key1", "key2"]
-raw_keys = st.secrets.get("GEMINI_API_KEYS", [os.environ.get("GEMINI_API_KEY")])
-key_pool = itertools.cycle(raw_keys)
+# --- API KEY SANITIZATION ---
+def get_valid_api_key():
+    raw_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
+    if not raw_key:
+        return None
+    # Fixes 'list' object has no attribute 'strip' if key was formatted as a list/array
+    if isinstance(raw_key, list):
+        for item in raw_key:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        return None
+    if isinstance(raw_key, str):
+        return raw_key.strip()
+    return None
 
-def call_gemini_with_key_rotation(prompt_text, status_widget):
-    for _ in range(len(raw_keys)):
-        active_key = next(key_pool)
-        client = genai.Client(api_key=active_key)
+
+# --- GEMINI CALL WITH RETRY ---
+def call_gemini_with_retry(client, prompt_text, status_widget, max_retries=5):
+    model_name = "gemini-3.6-flash"
+    
+    for attempt in range(max_retries):
         try:
             response = client.models.generate_content(
-                model="gemini-3.6-flash",
+                model=model_name,
                 contents=prompt_text,
+                config=types.GenerateContentConfig(temperature=0.2)
             )
             return (response.text or "").strip()
         except Exception as e:
-            if "quota" in str(e).lower() or "429" in str(e):
-                status_widget.warning("Key daily quota reached. Rotating to next API key...")
+            err_msg = str(e)
+            
+            if any(err in err_msg.lower() for err in ["429", "rate limit", "quota", "resource_exhausted"]):
+                wait_time = 15 * (attempt + 1)
+                status_widget.warning(f" Rate limit hit. Waiting {wait_time}s for quota reset (Attempt {attempt+1}/{max_retries})...")
+                time.sleep(wait_time)
                 continue
-            return f"[API Error]: {str(e)}"
-    return "[All Keys Exhausted]: Daily quotas reached on all available keys."
+            elif any(err in err_msg.lower() for err in ["503", "busy"]):
+                time.sleep(5)
+                continue
+                
+            return f"[API Error]: {err_msg}"
+            
+    return "[Quota Exceeded]: Daily rate limit reached. Switch API keys or wait for quota reset."
 
-# --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
+
+# --- PROMPT BUILDERS ---
 def format_morphology(tokens):
     if not tokens: return ""
     lines = [f"  {t.get('word', '?')} [{t.get('pos_tag', '?')}] root={t.get('morphology', {}).get('root', '?')}" for t in tokens]
@@ -67,72 +89,85 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
     prefix = "\n\n".join(blocks)
     return f"{instruction}{prefix}\n\nUlwazi: {context}\nUmbuzo: {question}\nImpendulo:"
 
+
 # --- TAB 1: NATIVE ISIZULU REASONING EXPERIMENT ---
 with tab1:
     st.header("Native isiZulu Reasoning & QA (Gemini 2.5 Flash)")
-    st.markdown("Evaluates whether morphological context enhances native isiZulu reading comprehension.")
+    st.markdown("Evaluates whether morphological context enhances native isiZulu reading comprehension and reasoning.")
     
-    col_a, col_b, col_c = st.columns(3)
-    dataset_path = col_a.text_input("Dataset Path", "isizulu_qa_dataset.json")
-    fewshot_k = col_b.number_input("Few-Shot Examples (K)", min_value=0, max_value=5, value=2)
-    test_size = col_c.number_input("Test Set Size", min_value=1, max_value=10, value=2)
+    dataset_path = st.text_input("Dataset Path", "isizulu_qa_dataset.json")
     
-    if st.button("Run Native QA Experiment"):
-        api_key = st.secrets.get("GEMINI_API_KEY") or os.environ.get("GEMINI_API_KEY")
-        
-        if not api_key:
-            st.error("Missing GEMINI_API_KEY in Streamlit Secrets.")
-        elif not os.path.exists(dataset_path):
-            st.error(f"Could not find dataset at {dataset_path}.")
-        else:
-            client = genai.Client(api_key=api_key)
-            
+    # Pre-load JSON data for question selection
+    dataset_items = []
+    if os.path.exists(dataset_path):
+        try:
             with open(dataset_path, encoding="utf-8") as f:
                 raw_data = json.load(f)
-            
-            data = [d for d in raw_data if d.get("question") and d.get("context")]
-            random.seed(42)
-            random.shuffle(data)
-            
-            fewshot_pool = data[:fewshot_k]
-            test_pool = data[fewshot_k:fewshot_k + test_size]
-            
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            table_container = st.empty()
-            
-            # Initialize results state
-            if "exp_results" not in st.session_state:
-                st.session_state.exp_results = []
-                
-            conditions = ["zero_shot", "fewshot_plain", "fewshot_annotated"]
-            
-            for i, item in enumerate(test_pool):
-                question = item['question']
-                context = item['context']
-                
-                row_data = {
-                    "Context": context[:70] + "...",
-                    "Question": question,
-                }
-                
-                for cond in conditions:
-                    status_text.info(f"Item {i+1}/{len(test_pool)} | Running {cond.replace('_', ' ').title()}...")
-                    prompt = build_qa_prompt(cond, question, context, fewshot_pool)
-                    
-                    response_text = call_gemini_with_retry(client, prompt, status_text)
-                    row_data[cond.replace("_", " ").title()] = response_text
-                    
-                    # 5-second delay guarantees <12 RPM (below 15 RPM free tier limit)
-                    time.sleep(5) 
-                
-                st.session_state.exp_results.append(row_data)
-                table_container.dataframe(pd.DataFrame(st.session_state.exp_results), use_container_width=True)
-                progress_bar.progress((i + 1) / len(test_pool))
-            
-            status_text.success("✅ Evaluation Complete!")
+            dataset_items = [d for d in raw_data if d.get("question") and d.get("context")]
+        except Exception as e:
+            st.error(f"Error reading JSON dataset: {e}")
+    else:
+        st.error(f"Could not find dataset file at `{dataset_path}`.")
 
-# --- MZANSILM TAB ---
+    if dataset_items:
+        all_questions = [item["question"] for item in dataset_items]
+        
+        col_select, col_k = st.columns([2, 1])
+        selected_questions = col_select.multiselect(
+            "Select Questions to Include in Test Run",
+            options=all_questions,
+            default=all_questions[:2]
+        )
+        fewshot_k = col_k.number_input("Few-Shot Pool Size (K)", min_value=0, max_value=5, value=2)
+        
+        if st.button("Run Native QA Experiment"):
+            api_key = get_valid_api_key()
+            
+            if not api_key:
+                st.error("Missing or invalid GEMINI_API_KEY in Streamlit Secrets or Environment.")
+            elif not selected_questions:
+                st.warning("Please select at least one question from the multiselect dropdown.")
+            else:
+                client = genai.Client(api_key=api_key)
+                
+                # Split test targets from background pool
+                test_pool = [d for d in dataset_items if d["question"] in selected_questions]
+                remaining_pool = [d for d in dataset_items if d["question"] not in selected_questions]
+                fewshot_pool = remaining_pool[:fewshot_k] if remaining_pool else dataset_items[:fewshot_k]
+                
+                progress_bar = st.progress(0)
+                status_text = st.empty()
+                table_container = st.empty()
+                
+                st.session_state.exp_results = []
+                conditions = ["zero_shot", "fewshot_plain", "fewshot_annotated"]
+                
+                for i, item in enumerate(test_pool):
+                    question = item['question']
+                    context = item['context']
+                    
+                    row_data = {
+                        "Context": context[:70] + "...",
+                        "Question": question,
+                    }
+                    
+                    for cond in conditions:
+                        status_text.info(f"Processing Question {i+1}/{len(test_pool)} | Condition: {cond.replace('_', ' ').title()}")
+                        prompt = build_qa_prompt(cond, question, context, fewshot_pool)
+                        
+                        response_text = call_gemini_with_retry(client, prompt, status_text)
+                        row_data[cond.replace("_", " ").title()] = response_text
+                        
+                        time.sleep(5)  # Pause to keep below free tier RPM limits
+                    
+                    st.session_state.exp_results.append(row_data)
+                    table_container.dataframe(pd.DataFrame(st.session_state.exp_results), use_container_width=True)
+                    progress_bar.progress((i + 1) / len(test_pool))
+                
+                status_text.success("✅ Evaluation Complete!")
+
+
+# --- TAB 2: MZANSILM ADAPTERS ---
 @st.cache_resource
 def load_mzansilm():
     MODEL_ID = "uctnlp/mzansilm-125m"
