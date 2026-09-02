@@ -155,7 +155,7 @@ def build_qa_prompt(condition, question, context, fewshot_pool):
 # --- TAB 2: NATIVE ISIZULU REASONING EXPERIMENT ---
 with tab2:
     st.header("Simulated low-resource isiZulu comprehension")
-    st.markdown("Simulates fine-tuning using Linguistic structure using data supplied in prompt.")
+    st.markdown("Simulates fine-tuning with lingustic structure by supplying it in prompt.")
     
     dataset_path = st.text_input("Dataset Path", "isizulu_qa_dataset.json")
     
